@@ -1,106 +1,92 @@
-#include <avr/io.h>
-#include <util/delay.h>
+#include <stdbool.h>
 #include <stdint.h>
+#include <util/delay.h>
 
-static void uart_init(void)
+#include "adc.h"
+#include "config.h"
+#include "relay.h"
+#include "soil_sensor.h"
+#include "uart.h"
+
+static void print_status(
+    uint16_t moisture,
+    bool pump_on,
+    uint16_t cooldown_seconds)
 {
-    /*
-     * 9600 baud @ 16 MHz
-     *
-     * UBRR = F_CPU / (16 * baud) - 1
-     *      ≈ 103
-     */
-    UBRR0H = 0;
-    UBRR0L = 103;
+    uart_write_string("ADC2 = ");
+    uart_write_uint16(moisture);
 
-    /* Enable transmitter. */
-    UCSR0B = (1 << TXEN0);
+    uart_write_string(" | pump = ");
 
-    /* 8 data bits, 1 stop bit, no parity. */
-    UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
-}
-
-static void uart_write_char(char c)
-{
-    while (!(UCSR0A & (1 << UDRE0))) {
-        /* Wait until transmit buffer is empty. */
+    if (pump_on) {
+        uart_write_string("ON");
+    } else {
+        uart_write_string("OFF");
     }
 
-    UDR0 = c;
-}
+    uart_write_string(" | cooldown = ");
+    uart_write_uint16(cooldown_seconds);
 
-static void uart_write_string(const char *text)
-{
-    while (*text != '\0') {
-        uart_write_char(*text);
-        text++;
-    }
-}
-
-static void uart_write_uint16(uint16_t value)
-{
-    char buffer[5];
-    uint8_t index = 0;
-
-    if (value == 0) {
-        uart_write_char('0');
-        return;
-    }
-
-    while (value > 0) {
-        buffer[index++] = '0' + (value % 10);
-        value /= 10;
-    }
-
-    while (index > 0) {
-        uart_write_char(buffer[--index]);
-    }
-}
-
-static void adc_init(void)
-{
-    /*
-     * AVcc as voltage reference.
-     * ADC2 selected initially.
-     */
-    ADMUX = (1 << REFS0) | (1 << MUX1);
-
-    /*
-     * Enable ADC.
-     *
-     * Prescaler = 128:
-     * 16 MHz / 128 = 125 kHz ADC clock.
-     */
-    ADCSRA =
-        (1 << ADEN) |
-        (1 << ADPS2) |
-        (1 << ADPS1) |
-        (1 << ADPS0);
-}
-
-static uint16_t adc_read(void)
-{
-    /* Start conversion. */
-    ADCSRA |= (1 << ADSC);
-
-    /* Wait until conversion completes. */
-    while (ADCSRA & (1 << ADSC)) {
-    }
-
-    return ADC;
+    uart_write_string("\r\n");
 }
 
 int main(void)
 {
+    uint8_t pump_on_seconds = 0;
+    uint16_t cooldown_seconds = 0;
+
     uart_init();
     adc_init();
+    relay_init();
+
+    uart_write_string("\r\n");
+    uart_write_string("AVR Irrigation System\r\n");
+    uart_write_string("---------------------\r\n");
 
     while (1) {
-        uint16_t moisture = adc_read();
+        uint16_t moisture = soil_sensor_read();
+        bool pump_on = relay_is_on();
 
-        uart_write_string("ADC2 = ");
-        uart_write_uint16(moisture);
-        uart_write_string("\r\n");
+        if (pump_on) {
+            pump_on_seconds++;
+
+            if (moisture <= SOIL_WET_THRESHOLD) {
+                relay_off();
+
+                pump_on_seconds = 0;
+                cooldown_seconds = PUMP_COOLDOWN_SECONDS;
+
+                uart_write_string(
+                    "Pump OFF: wet soil threshold reached.\r\n");
+            }
+            else if (pump_on_seconds >= PUMP_MAX_ON_SECONDS) {
+                relay_off();
+
+                pump_on_seconds = 0;
+                cooldown_seconds = PUMP_COOLDOWN_SECONDS;
+
+                uart_write_string(
+                    "Pump OFF: maximum runtime reached.\r\n");
+            }
+        }
+        else {
+            pump_on_seconds = 0;
+
+            if (cooldown_seconds > 0) {
+                cooldown_seconds--;
+            }
+            else if (moisture >= SOIL_DRY_THRESHOLD) {
+                relay_on();
+
+                uart_write_string(
+                    "Pump ON: dry soil detected.\r\n");
+            }
+        }
+
+        print_status(
+            moisture,
+            relay_is_on(),
+            cooldown_seconds);
 
         _delay_ms(1000);
     }
