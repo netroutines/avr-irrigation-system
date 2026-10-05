@@ -3,11 +3,15 @@
 
 int main(void)
 {
-    DDRB |= (1 << DDB5);
+    PORTD |= (1 << PORTD5);
+    DDRD  |= (1 << DDD5);
 
     while (1) {
-        PORTB ^= (1 << PORTB5);
-        _delay_ms(500);
+        PORTD &= ~(1 << PORTD5);
+        _delay_ms(1000);
+
+        PORTD |= (1 << PORTD5);
+        _delay_ms(1000);
     }
 
     return 0;
